@@ -2,6 +2,7 @@ import { Fragment, useState, type FormEvent } from 'react';
 import { Card, Field, Glyph, formValues, rowsFor, type DialogSpec } from './controls';
 import { dateTime, type Fields, type Role, type Row, type State } from './model';
 import { pages } from './pages';
+import { useLocale } from './locale';
 
 type Data = Pick<State, 'rows'>;
 type Result = { index: number; record: Row };
@@ -52,6 +53,7 @@ function matching(name: string, record: Row, filters: Fields) {
 }
 
 export function TablePage({ name, role, data, showDialog, mutate, open }: Props) {
+  const { t } = useLocale();
   const [filters, setFilters] = useState<Fields>({});
   const [size, setSize] = useState(10);
   const [page, setPage] = useState(1);
@@ -87,7 +89,7 @@ export function TablePage({ name, role, data, showDialog, mutate, open }: Props)
     if (operation === 'info') {
       if (name === 'user list') return edit('basic overview', result);
       return showDialog({ title: 'info', content: <dl>{Object.entries(record).map(([key, value]) =>
-        <Fragment key={key}><dt><b>{key}</b></dt><dd>{value}</dd></Fragment>)}</dl> });
+        <Fragment key={key}><dt><b>{t(key)}</b></dt><dd>{value}</dd></Fragment>)}</dl> });
     }
     if (operation === 'product') {
       return showDialog({ title: '+product', content:
@@ -95,7 +97,7 @@ export function TablePage({ name, role, data, showDialog, mutate, open }: Props)
       submit: apply });
     }
     const title = operation === 'delete' ? 'Delete record' : record.status === 'locked' ? 'Unlock account' : 'Lock account';
-    showDialog({ title, content: <p>{title}?</p>, submit: () => apply() });
+    showDialog({ title, content: <p>{t('{action}?', { action: t(title) })}</p>, submit: () => apply() });
   }
 
   function toolbar(action: string) {
@@ -110,11 +112,11 @@ export function TablePage({ name, role, data, showDialog, mutate, open }: Props)
     } else if (/^(delete by condition|delete data|one-click delete|bulk deletion)$/i.test(action) && spec.editFields.length) {
       showDialog({
         title: action,
-        content: <p>{results.length ? 'Delete ' + results.length + ' matching demo records?' : 'no data'}</p>,
+        content: <p>{results.length ? t('Delete {count} matching demo records?', { count: results.length }) : t('no data')}</p>,
         submit: results.length ? () => mutate({ operation: 'delete-many', results }) : undefined,
       });
     } else {
-      showDialog({ title: action, content: <p className="notice">This operation requires a connected service or additional configuration.</p> });
+      showDialog({ title: action, content: <p className="notice">{t('This operation requires a connected service or additional configuration.')}</p> });
     }
   }
 
@@ -125,7 +127,7 @@ export function TablePage({ name, role, data, showDialog, mutate, open }: Props)
   }
 
   function actionButton(action: string, index: number) {
-    const label = /^(add |new |adding |additional )/i.test(action) ? '+ ' + action : action;
+    const label = (/^(add |new |adding |additional )/i.test(action) ? '+ ' : '') + t(action);
     const color = action === 'add a user' ? ' orange' : index === 1 && isUsers ? ' blue' : '';
     return <button className={'btn small' + color} key={action} onClick={() => toolbar(action)}>{label}</button>;
   }
@@ -135,21 +137,21 @@ export function TablePage({ name, role, data, showDialog, mutate, open }: Props)
       <div className="filter-grid">{spec.fields.map(([label, hint = '']) =>
         <Field key={label} idPrefix={name} label={label} hint={hint} options={choices(data, label, hint)} />)}
       </div>
-      <button className="btn query" type="submit"><Glyph code={'\ue615'} /> {query}</button>
+      <button className="btn query" type="submit"><Glyph code={'\ue615'} /> {t(query)}</button>
     </form>}
     {isUsers ? <>
       <div className="actions center">{actions.filter(action => action !== 'export user').map(actionButton)}</div>
       <div className="actions stacked">{actionButton('export user', 0)}</div>
     </> : !!actions.length && <div className="actions">{actions.map(actionButton)}</div>}
     {name === 'send record' && <>
-      <div className="record-summary">Total sent: {results.length} Reported success: {status('success')} Awaiting report: {status('queued (demo)')} Failed: {status('failed')} Success rate: {results.length ? (100 * status('success') / results.length).toFixed(1) : '0'}%</div>
-      {role === 'admin' && <div className="record-tools">according to the search conditions to the user：
+      <div className="record-summary">{t('Total sent')}: {results.length} · {t('Reported success')}: {status('success')} · {t('Awaiting report')}: {status('queued (demo)')} · {t('Failed')}: {status('failed')} · {t('Success rate')}: {results.length ? (100 * status('success') / results.length).toFixed(1) : '0'}%</div>
+      {role === 'admin' && <div className="record-tools">{t("Actions for matching records:")}
         {['①repush status', '②failure or success turn each other', '③Unknown transfer success or failure', '④push custom uplink'].map((label, index) =>
-          <button className={'btn small ' + ['orange', '', 'yellow', 'blue'][index]} key={label} onClick={() => toolbar(label)}>{label}</button>)}
+          <button className={'btn small ' + ['orange', '', 'yellow', 'blue'][index]} key={label} onClick={() => toolbar(label)}>{t(label)}</button>)}
       </div>}
     </>}
     <div className="table-wrap"><table className={isUsers ? 'user-table' : ''}>
-      <thead><tr>{spec.columns.map(column => <th scope="col" key={column}>{column}{isUsers && column === 'account' && <span className="text-[var(--teal)]">(You can right-click on the blank space)</span>}</th>)}</tr></thead>
+      <thead><tr>{spec.columns.map(column => <th scope="col" key={column}>{t(column)}{isUsers && column === 'account' && <span className="text-[var(--teal)]">{t('(You can right-click on the blank space)')}</span>}</th>)}</tr></thead>
       <tbody>{visible.length ? visible.map(result => <tr key={result.index}>
         {spec.columns.map(column => <td key={column} className={column === 'status' ? 'status' : undefined}
           onContextMenu={name === 'user list' && column === 'account' ? event => {
@@ -160,54 +162,59 @@ export function TablePage({ name, role, data, showDialog, mutate, open }: Props)
                   const dialog = document.querySelector<HTMLDialogElement>('dialog[open]');
                   dialog?.close();
                   open(target);
-                }}>{target}</button>)}
+                }}>{t(target)}</button>)}
             </div> });
           } : undefined}>
           {['operate', '操作'].includes(column) ? <div className="inline-actions">
-            <button className="btn small" onClick={() => rowAction('info', result)}>info</button>
-            {!!spec.editFields.length && <button className="btn small" onClick={() => rowAction('edit', result)}>{name === 'user list' ? 'Set' : 'Editing'}</button>}
+            <button className="btn small" onClick={() => rowAction('info', result)}>{t('info')}</button>
+            {!!spec.editFields.length && <button className="btn small" onClick={() => rowAction('edit', result)}>{t(name === 'user list' ? 'Set' : 'Editing')}</button>}
             {name === 'user list' ? <>
-              <button className="btn small orange" onClick={() => rowAction('product', result)}>+product</button>
-              <button className="btn small secondary" onClick={() => rowAction('lock', result)}>{result.record.status === 'locked' ? 'unlock' : 'lock'}</button>
+              <button className="btn small orange" onClick={() => rowAction('product', result)}>{t('+product')}</button>
+              <button className="btn small secondary" onClick={() => rowAction('lock', result)}>{t(result.record.status === 'locked' ? 'unlock' : 'lock')}</button>
             </> : (!!spec.editFields.length || name === 'send task') &&
-              <button className="btn small blue" onClick={() => rowAction('delete', result)}>delete</button>}
+              <button className="btn small blue" onClick={() => rowAction('delete', result)}>{t('delete')}</button>}
           </div> : <Cell name={name} column={column} record={result.record} />}
         </td>)}
-      </tr>) : <tr><td className="empty" colSpan={spec.columns.length}>no data</td></tr>}</tbody>
+      </tr>) : <tr><td className="empty" colSpan={spec.columns.length}>{t('no data')}</td></tr>}</tbody>
     </table></div>
     {!!results.length && <form className="pager" onSubmit={event => {
       event.preventDefault();
       setPage(Math.max(1, Math.min(pageCount, Number(formValues(event.currentTarget).page) || 1)));
     }}>
-      共 {results.length} 条
-      <button type="button" disabled={current === 1} onClick={() => setPage(current - 1)}>上一页</button>
+      {t('{count} records', { count: results.length })}
+      <button type="button" disabled={current === 1} onClick={() => setPage(current - 1)}>{t('Previous page')}</button>
       <button type="button" className="current" aria-current="page">{current}</button>
-      <button type="button" disabled={current === pageCount} onClick={() => setPage(current + 1)}>下一页</button>
-      <select aria-label="Records per page" value={size} onChange={event => { setSize(Number(event.target.value)); setPage(1); }}>
-        {[10, 20, 30, 40, 50].map(value => <option key={value} value={value}>{value} 条/页</option>)}
+      <button type="button" disabled={current === pageCount} onClick={() => setPage(current + 1)}>{t('Next page')}</button>
+      <select aria-label={t('Records per page')} value={size} onChange={event => { setSize(Number(event.target.value)); setPage(1); }}>
+        {[10, 20, 30, 40, 50].map(value => <option key={value} value={value}>{t('{count} per page', { count: value })}</option>)}
       </select>
-      到第 <input key={current} type="number" name="page" min="1" max={pageCount} defaultValue={current} aria-label="Page number" /> 页
-      <button type="submit">确定</button>
+      {t('Go to page')} <input key={current} type="number" name="page" min="1" max={pageCount} defaultValue={current} aria-label={t('Page number')} /> {t('page suffix')}
+      <button type="submit">{t('Confirm')}</button>
     </form>}
-    {isUsers && <div className="notice">1、Health state： ● normal · ● No heartbeat was received for a long time · ● ununited。<br />
-      2、After the account is locked, you cannot log in. Do not send SMS messages after the SPID or account is deregistered<br />
-      3、The data to be returned is reserved only for the last two months</div>}
+    {isUsers && <div className="notice">{t('Health state: Normal · No heartbeat for a long time · Disconnected.')}<br />
+      {t('Locked accounts cannot log in. Do not send SMS after a SPID or account is deactivated.')}<br />
+      {t('Data is retained for the last two months.')}</div>}
   </div></Card>;
 }
 
+const translatedColumns = new Set(['status', '状态', 'task status', 'audit status', 'enabled state', 'health state', 'role', 'role name', 'login user side']);
+
 function Cell({ name, column, record }: { name: string; column: string; record: Row }) {
+  const { t } = useLocale();
   if (name === 'user list' && column === 'account') return <>
-    <b>{record.account}</b><br /><span className="tag probation">probation</span><br />
-    <span className="tag company">company</span><br /><span className="tag channel">channel</span><br /><span className="tag">none</span>
+    <b>{record.account}</b><br /><span className="tag probation">{t('probation')}</span><br />
+    <span className="tag company">{t('company')}</span><br /><span className="tag channel">{t('channel')}</span><br /><span className="tag">{t('none')}</span>
   </>;
   if (name === 'user list' && column === 'launched product') {
     const products = String(record[column] ?? '').split('|').filter(Boolean);
-    return products.length ? products.map(product => <div key={product}><span className="product-badge">{product}</span> <small>balance 0.00 · price -</small></div>) : '-';
+    return products.length ? products.map(product => <div key={product}><span className="product-badge">{product}</span> <small>{t('Balance {amount} · price {price}', { amount: '0.00', price: '-' })}</small></div>) : '-';
   }
   if (name === 'user list' && column.startsWith('Contact person')) return <>
     {['contact person', 'company', 'Contact number', 'create time', 'remark'].map(key => <div key={key}>{record[key] || '-'}</div>)}
   </>;
-  return record[column] === '' || record[column] === undefined ? '-' : record[column];
+  const value = record[column];
+  if (value === '' || value === undefined) return '-';
+  return typeof value === 'string' && translatedColumns.has(column.toLowerCase()) ? t(value) : value;
 }
 
 function downloadCsv(name: string, columns: string[], results: Result[]) {

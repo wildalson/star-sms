@@ -5,10 +5,11 @@ import { ApiError, request } from './api';
 import { Workspace } from './workspace';
 import type { Role, State } from './model';
 import { formValues } from './controls';
+import { demoAccounts } from './demo-accounts';
 import './style.css';
 
 function Login({ role, onLogin }: { role: Role; onLogin: () => void }) {
-  const [challenge, setChallenge] = useState<{ id: string; image: string }>();
+  const [challenge, setChallenge] = useState<{ id: string; image: string; localDemo: boolean }>();
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   async function refresh() {
@@ -48,7 +49,9 @@ function Login({ role, onLogin }: { role: Role; onLogin: () => void }) {
         </button>
       </div>
       <button className="login-submit" type="submit" disabled={!challenge || busy}>{busy ? 'Logging in…' : 'Log in'}</button>
-      <div className="login-note">Local demo · {role === 'admin' ? 'admin' : 'customer'} / sms-demo</div>
+      {challenge && <div className="login-note">{challenge.localDemo
+        ? 'Local demo · ' + demoAccounts[role].username + ' / ' + demoAccounts[role].password
+        : 'Hosted demo · ' + demoAccounts[role].username}</div>}
     </form>
   </main>;
 }

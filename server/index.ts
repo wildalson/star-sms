@@ -5,18 +5,30 @@ import { createStore } from './store.ts';
 
 const root = resolve(import.meta.dirname, '..');
 const dev = process.argv.includes('--dev');
-const databaseUrl = process.env.DATABASE_URL?.trim();
-const store = createStore(databaseUrl, resolve(root, '.data/demo.json'));
+const hosted = process.env.RENDER === 'true';
+const hostname = process.env.RENDER_EXTERNAL_HOSTNAME;
+const clientPassword = process.env.STAR_SMS_CLIENT_PASSWORD;
+const adminPassword = process.env.STAR_SMS_ADMIN_PASSWORD;
+if (hosted && (dev || !hostname || !clientPassword || !adminPassword ||
+  clientPassword.length < 16 || adminPassword.length < 16 || clientPassword === adminPassword)) {
+  throw new Error('Render requires a hostname and distinct demo passwords of at least 16 characters.');
+}
+const hostedPasswords = hosted ? { client: clientPassword!, admin: adminPassword! } : undefined;
+const databaseUrl = hosted ? undefined : process.env.DATABASE_URL?.trim();
+const store = createStore(databaseUrl, hosted ? undefined : resolve(root, '.data/demo.json'));
 const app = express();
 
 app.disable('x-powered-by');
+if (hosted) app.set('trust proxy', 1);
+app.get('/healthz', (_req, res) => { res.status(200).type('text').send('ok'); });
 app.use((req, res, next) => {
-  if (!['localhost', '127.0.0.1'].includes(req.hostname)) {
-    return res.status(403).send('Open this demo from localhost.');
+  const allowed = hosted ? req.hostname === hostname : ['localhost', '127.0.0.1'].includes(req.hostname);
+  if (!allowed) {
+    return res.status(403).send('Open the demo from its configured address.');
   }
   next();
 });
-app.use('/api', createApi(store));
+app.use('/api', createApi(store, hostedPasswords));
 app.get('/', (_req, res) => res.redirect('/client/'));
 
 if (dev) {
@@ -34,8 +46,9 @@ if (dev) {
 }
 
 const port = Number(process.env.PORT || 4173);
-app.listen(port, '127.0.0.1', () => {
-  console.log(`Client  http://127.0.0.1:${port}/client/`);
-  console.log(`Admin   http://127.0.0.1:${port}/admin/`);
-  console.log(databaseUrl ? 'Data: PostgreSQL' : 'Data: local demo file');
+app.listen(port, hosted ? '0.0.0.0' : '127.0.0.1', () => {
+  const base = hosted ? 'https://' + hostname : 'http://127.0.0.1:' + port;
+  console.log(`Client  ${base}/client/`);
+  console.log(`Admin   ${base}/admin/`);
+  console.log(hosted ? 'Data: demo memory' : databaseUrl ? 'Data: PostgreSQL' : 'Data: local demo file');
 });

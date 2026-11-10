@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from 'node:util';
 import cookieParser from 'cookie-parser';
 import express, { Router, type Request, type Response } from 'express';
 import { rateLimit } from 'express-rate-limit';
+import { demoAccounts } from '../src/demo-accounts.ts';
 import { configForms, pages } from '../src/pages.ts';
 import { dateTime, type Fields, type Role, type Row } from '../src/model.ts';
 import type { Store } from './store.ts';
@@ -10,7 +11,7 @@ import type { Store } from './store.ts';
 const clientPages = new Set(['send task', 'send record', 'reply record', 'recharge record',
   'user template', 'user blacklist', 'user whitelist', 'user statis', 'product list']);
 const clientEditable = new Set(['user template', 'user blacklist', 'user whitelist']);
-const credentials: Record<Role, string> = { admin: 'admin', client: 'customer' };
+const legacyDemoUsernames: Record<Role, string> = { admin: 'admin', client: 'customer' };
 
 class InputError extends Error {
   status: number;
@@ -30,12 +31,14 @@ function formFields(input: unknown, allowed: string[], max = 5000): Fields {
   }));
 }
 
-export function createApi(store: Store) {
+export function createApi(store: Store, hostedPasswords?: Record<Role, string>) {
   const api = Router();
   api.use(express.json({ limit: '3mb' }), cookieParser());
   api.use((_req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
 
-  for (const role of ['admin', 'client'] as const) api.use('/' + role, roleApi(role, store));
+  for (const role of ['admin', 'client'] as const) {
+    api.use('/' + role, roleApi(role, store, hostedPasswords?.[role]));
+  }
 
   api.use((_req, res) => { res.status(404).json({ error: 'API route not found.' }); });
   api.use((error: Error & { status?: number }, _req: Request, res: Response, _next: unknown) => {
@@ -46,12 +49,12 @@ export function createApi(store: Store) {
   return api;
 }
 
-function roleApi(role: Role, store: Store) {
+function roleApi(role: Role, store: Store, hostedPassword?: string) {
   const router = Router();
   const sessions = new Map<string, number>();
   const challenges = new Map<string, { code: string; expires: number }>();
   const cookie = 'star_sms_' + role;
-  const cookieSettings = { httpOnly: true, sameSite: 'strict' as const, path: '/api/' + role };
+  const cookieSettings = { httpOnly: true, sameSite: 'strict' as const, path: '/api/' + role, secure: Boolean(hostedPassword) };
   const token = () => randomBytes(24).toString('base64url');
 
   router.use(['/challenge', '/login'], rateLimit({
@@ -78,7 +81,7 @@ function roleApi(role: Role, store: Store) {
       <g fill="none" stroke="#a2a5c5"><path d="M0 23Q28 51 66 17T156 18"/><path d="M0 12Q40 28 77 8T156 24"/></g>
       <g font-family="Georgia,serif" font-size="22" font-weight="bold" fill="#29265e">${glyphs}</g>
     </svg>`;
-    res.json({ id, image: 'data:image/svg+xml;base64,' + Buffer.from(svg).toString('base64') });
+    res.json({ id, image: 'data:image/svg+xml;base64,' + Buffer.from(svg).toString('base64'), localDemo: !hostedPassword });
   });
 
   router.post('/login', async (req, res) => {
@@ -86,8 +89,11 @@ function roleApi(role: Role, store: Store) {
     const challenge = challenges.get(challengeId);
     challenges.delete(challengeId);
     const now = Date.now();
+    const demo = demoAccounts[role];
+    const matchesDemo = username === demo.username && password === (hostedPassword ?? demo.password);
+    const matchesLegacyDemo = !hostedPassword && username === legacyDemoUsernames[role] && password === 'sms-demo';
     if (!challenge || challenge.expires <= now || challenge.code !== captcha.toUpperCase() ||
-      username !== credentials[role] || password !== 'sms-demo') {
+      !(matchesDemo || matchesLegacyDemo)) {
       throw new InputError('Incorrect username, password or CAPTCHA.', 401);
     }
     if (role === 'client') {
@@ -99,7 +105,7 @@ function roleApi(role: Role, store: Store) {
     for (const [key, expires] of sessions) if (expires <= now) sessions.delete(key);
     const id = token();
     sessions.set(id, now + 8 * 3_600_000);
-    res.cookie(cookie, id, { ...cookieSettings, maxAge: 8 * 3_600_000, secure: req.secure }).json({ role });
+    res.cookie(cookie, id, { ...cookieSettings, maxAge: 8 * 3_600_000 }).json({ role });
   });
 
   router.use((req, _res, next) => {
@@ -111,7 +117,7 @@ function roleApi(role: Role, store: Store) {
 
   router.post('/logout', (req, res) => {
     sessions.delete(req.cookies[cookie]);
-    res.clearCookie(cookie, { ...cookieSettings, secure: req.secure }).sendStatus(204);
+    res.clearCookie(cookie, cookieSettings).sendStatus(204);
   });
 
   router.get('/state', async (_req, res) => {

@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: star-sms-demo
+    runtime: node
+    plan: free
+    branch: main
+    buildCommand: corepack pnpm install --frozen-lockfile && corepack pnpm build
+    startCommand: node server/index.ts
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_VERSION
+        value: "24.15.0"
+      - key: STAR_SMS_CLIENT_PASSWORD
+        generateValue: true
+      - key: STAR_SMS_ADMIN_PASSWORD
+        generateValue: true

@@ -30,21 +30,24 @@ test('separate portal sessions and a shared, persistent demo queue', async t => 
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 
-  async function login(role: Role, username: string) {
+  async function login(role: Role, username: string, password: string) {
     const response = await call(role, '/challenge');
     assert.equal(response.status, 200);
     const { id, image } = await response.json() as { id: string; image: string };
     const svg = Buffer.from(image.split(',')[1], 'base64').toString();
     const captcha = [...svg.matchAll(/<text [^>]+>(.)<\/text>/g)].map(match => match[1]).join('');
     assert.equal(captcha.length, 4);
-    return call(role, '/login', undefined, { username, password: 'sms-demo', captcha, challengeId: id });
+    return call(role, '/login', undefined, { username, password, captcha, challengeId: id });
   }
 
   assert.equal((await call('admin', '/state')).status, 401);
-  assert.equal((await login('admin', 'customer')).status, 401);
-  assert.equal((await login('client', 'admin')).status, 401);
-  const customer = await login('client', 'customer');
-  const administrator = await login('admin', 'admin');
+  assert.equal((await login('admin', 'demo-client', 'client-demo')).status, 401);
+  assert.equal((await login('client', 'demo-admin', 'admin-demo')).status, 401);
+  assert.equal((await login('admin', 'demo-admin', 'client-demo')).status, 401);
+  assert.equal((await login('client', 'customer', 'sms-demo')).status, 200);
+  assert.equal((await login('admin', 'admin', 'sms-demo')).status, 200);
+  const customer = await login('client', 'demo-client', 'client-demo');
+  const administrator = await login('admin', 'demo-admin', 'admin-demo');
   assert.equal(customer.status, 200);
   assert.equal(administrator.status, 200);
   const clientCookie = customer.headers.getSetCookie()[0].split(';')[0];

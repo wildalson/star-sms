@@ -2,6 +2,9 @@ import { Fragment, useState, type FormEvent } from 'react';
 import { Card, Field, Glyph, formValues, rowsFor, type DialogSpec } from './controls';
 import { dateTime, type Fields, type Role, type Row, type State } from './model';
 import { pages } from './pages';
+import { adminFieldKey, adminFormFor, adminForms, type AdminField, type AdminFormKey } from './admin-forms';
+import { permissions } from './permissions-tree';
+import { filterOptions } from './filter-options';
 import { useLocale } from './locale';
 
 type Data = Pick<State, 'rows'>;
@@ -13,22 +16,27 @@ type Props = {
   showDialog: (spec: DialogSpec) => void;
   mutate: (input: unknown) => Promise<void>;
   open: (name: string) => void;
+  hideExports?: boolean;
 };
 
 const filterKeys: Record<string, Record<string, string>> = {
   'user list': { mobile: 'Contact number', 'product type': 'launched product' },
+  'product list': { 'external name': 'Product name', 'State of operation': 'enabled state', 'channel pool': 'Pool of channels' },
   'send record': { 'send status': 'status', 'submit time': 'date', mobile: 'mobile/extension', account: 'user/company', 'product type': 'product/code' },
   'send task': { 'product type': 'product/code', account: 'user/company' },
   'channel list': { channel: 'channel name/vendor', 'Channel account': 'Account number', 'channel pool': 'Channel pool' },
   account: { 'User name': 'User name/name/mobile phone number' },
 };
 
-function choices(data: Data, label: string, hint: string) {
-  if (!/please select|include indirect account|^all/i.test(hint)) return [];
+function choices(data: Data, page: string, label: string, hint: string) {
+  const observed = filterOptions[page]?.[label];
+  if (observed) return observed;
+  if (!/please select|include indirect account|^all/i.test(hint)) return undefined;
   const values = (page: string, key: string) => [...new Set(rowsFor(data, page).map(row => row[key]).filter(Boolean))];
   if (/^(account|indirectaccount|parent account)$/i.test(label)) return values('user list', 'account');
   if (label === 'company') return values('user list', 'company');
   if (/^channel$/i.test(label)) return values('channel list', 'channel name/vendor');
+  if (/supplier/i.test(label)) return values('channel provider', 'Supplier abbreviation');
   if (/channel pool/i.test(label)) return values('channel pool list', 'channel pool');
   if (/product/i.test(label)) return values('product list', 'Product name');
   if (/country/i.test(label)) return ['Philippines', 'International'];
@@ -36,14 +44,19 @@ function choices(data: Data, label: string, hint: string) {
   if (/certified/i.test(label)) return ['certified', 'uncertified'];
   if (/billing/i.test(label)) return ['submission billing', 'success billing'];
   if (/role/i.test(label)) return values('role', 'Role name');
-  return [];
+  return undefined;
 }
 
 function matching(name: string, record: Row, filters: Fields) {
   return Object.entries(filters).every(([label, value]) => {
     if (!value.trim()) return true;
     const key = filterKeys[name]?.[label] ?? label;
-    const candidate = String(record[key] ?? Object.entries(record).find(([column]) => column.toLowerCase() === key.toLowerCase())?.[1] ?? '');
+    let candidate = String(record[key] ?? Object.entries(record).find(([column]) => column.toLowerCase() === key.toLowerCase())?.[1] ?? '');
+    if (label === 'task type') candidate = ({ Immediate: 'instant send', Scheduled: 'timed transmission' } as Record<string, string>)[candidate] ?? candidate;
+    if (label === 'task status' && candidate === 'queued (demo)') candidate = 'not yet started';
+    if (label === 'send status') candidate = ({ 'queued (demo)': 'wait for submission', success: 'report success', failed: 'report failure' } as Record<string, string>)[candidate] ?? candidate;
+    if (/^(enabled state|State of operation)$/.test(label)) candidate = ({ enabled: 'enable', disabled: 'deactivate' } as Record<string, string>)[candidate] ?? candidate;
+    if (label === 'Health state' && candidate === 'offline') candidate = 'failure';
     if (label === 'submit time') {
       const [from, to] = value.split(' - ');
       return to ? candidate >= from && candidate <= to : candidate.includes(from);
@@ -52,7 +65,7 @@ function matching(name: string, record: Row, filters: Fields) {
   });
 }
 
-export function TablePage({ name, role, data, showDialog, mutate, open }: Props) {
+export function TablePage({ name, role, data, showDialog, mutate, open, hideExports }: Props) {
   const { t } = useLocale();
   const [filters, setFilters] = useState<Fields>({});
   const [size, setSize] = useState(10);
@@ -65,14 +78,44 @@ export function TablePage({ name, role, data, showDialog, mutate, open }: Props)
   const current = Math.min(page, pageCount);
   const visible = results.slice((current - 1) * size, current * size);
   const query = ({ 'SMS audit': 'detail query', 'Backfill Report': '查询', policy: 'query', 'global blacklist': 'query' } as Record<string, string>)[name] ?? 'inquire';
-  const actions = spec.actions.filter(action => action !== query);
+  const actions = spec.actions.filter(action => action !== query && !(hideExports && /export|derived space/i.test(action)));
+  const configurableProduct = role === 'admin' && name === 'product list';
   const status = (value: string) => results.filter(({ record }) => record.status === value).length;
+
+  function openAdminForm(key: AdminFormKey, result?: Result) {
+    const spec = adminForms[key];
+    const record = result?.record;
+    showDialog({
+      title: spec.title,
+      submitLabel: 'submit' in spec ? spec.submit : undefined,
+      content: (spec.fields as AdminField[]).map(field => {
+        const name = adminFieldKey(field);
+        const stored = record?.[name];
+        const normalized = name === 'enabled state' && stored
+          ? ({ enabled: 'enable', disabled: 'deactivate' } as Record<string, string>)[String(stored)] ?? stored : stored;
+        const value = /password/i.test(field.label) ? '' : normalized ??
+          (name === 'internal name' ? record?.['Product name'] : undefined) ?? field.initial;
+        const options = field.options ?? sourceOptions(data, field.source);
+        return <Field key={name} idPrefix="admin-edit" name={name} label={field.label}
+          value={value} hint={field.hint} options={options} required={field.required}
+          multiline={field.multiline} radio={field.radio} checkbox={field.checkbox} inputType={field.number ? 'number' : undefined}
+          range={field.number} />;
+      }),
+      submit: values => {
+        const clean = Object.fromEntries(Object.entries(values).filter(([name]) => !/password/i.test(name)));
+        return mutate(result
+          ? { operation: 'edit', form: key, index: result.index, expected: result.record, values: clean }
+          : { operation: 'create', form: key, values: clean });
+      },
+    });
+  }
 
   function edit(title: string, result?: Result) {
     if (!spec.editFields.length) return;
     showDialog({
       title,
       content: spec.editFields.filter(label => !/password/i.test(label)).map((label, index) =>
+        label === 'Permissions' && name === 'role' ? <PermissionTree key={label} value={String(result?.record[label] ?? '')} /> :
         <Field key={label} idPrefix="edit" label={label} value={result?.record[label]} required={index === 0} multiline={/content|remark/i.test(label)} />),
       submit: values => mutate(result
         ? { operation: 'edit', index: result.index, expected: result.record, values }
@@ -84,7 +127,10 @@ export function TablePage({ name, role, data, showDialog, mutate, open }: Props)
     const { record, index } = result;
     const apply = (values?: Fields) => mutate({ operation, index, expected: record, values });
     if (operation === 'edit') {
-      return edit(name === 'user list' ? 'Attribute configuration' : 'Editing', result);
+      const key = name === 'user list' ? 'customerAttributes' :
+        adminFormFor(name, 'edit', String(record.Protocol ?? record['channel type'] ?? ''));
+      if (role === 'admin' && key) return openAdminForm(key, result);
+      return edit('Editing', result);
     }
     if (operation === 'info') {
       if (name === 'user list') return edit('basic overview', result);
@@ -92,15 +138,28 @@ export function TablePage({ name, role, data, showDialog, mutate, open }: Props)
         <Fragment key={key}><dt><b>{t(key)}</b></dt><dd>{value}</dd></Fragment>)}</dl> });
     }
     if (operation === 'product') {
-      return showDialog({ title: '+product', content:
-        <Field label="product" idPrefix="add-product" options={rowsFor(data, 'product list').map(row => row['Product name'])} required />,
-      submit: apply });
+      return showDialog({
+        title: '+product', submitLabel: 'confirm opening',
+        content: <>
+          <Field label="product" idPrefix="add-product" options={rowsFor(data, 'product list').map(row => row['Product name'])} required />
+          <Field label="International product billing word count" idPrefix="add-product"
+            options={['160words/pieces', '140words/pieces', 'force 1 piece']} radio />
+        </>,
+        submit: apply,
+      });
+    }
+    if (operation === 'toggle-channel') {
+      const enabled = ['enable', 'enabled'].includes(String(record['enabled state']));
+      const title = enabled ? 'Deactivate channel' : 'Enable channel';
+      return showDialog({ title, content: <p>{t('Channel state is recorded in this demo.')}</p>, submit: () => apply() });
     }
     const title = operation === 'delete' ? 'Delete record' : record.status === 'locked' ? 'Unlock account' : 'Lock account';
     showDialog({ title, content: <p>{t('{action}?', { action: t(title) })}</p>, submit: () => apply() });
   }
 
   function toolbar(action: string) {
+    const form = role === 'admin' && adminFormFor(name, action);
+    if (form) return openAdminForm(form);
     if (action === 'reset form') {
       setFilters({});
       setPage(1);
@@ -135,7 +194,7 @@ export function TablePage({ name, role, data, showDialog, mutate, open }: Props)
   return <Card title={spec.title}><div className="table-page">
     {!!spec.fields.length && <form key={filterVersion} onSubmit={filter}>
       <div className="filter-grid">{spec.fields.map(([label, hint = '']) =>
-        <Field key={label} idPrefix={name} label={label} hint={hint} options={choices(data, label, hint)} />)}
+        <Field key={label} idPrefix={name} label={label} hint={hint} options={choices(data, name, label, hint)} />)}
       </div>
       <button className="btn query" type="submit"><Glyph code={'\ue615'} /> {t(query)}</button>
     </form>}
@@ -151,7 +210,7 @@ export function TablePage({ name, role, data, showDialog, mutate, open }: Props)
       </div>}
     </>}
     <div className="table-wrap"><table className={isUsers ? 'user-table' : ''}>
-      <thead><tr>{spec.columns.map(column => <th scope="col" key={column}>{t(column)}{isUsers && column === 'account' && <span className="text-[var(--teal)]">{t('(You can right-click on the blank space)')}</span>}</th>)}</tr></thead>
+      <thead><tr>{spec.columns.map(column => <th scope="col" key={column}>{t(column)}{isUsers && column === 'account' && <span className="text-[var(--teal)]">{t('(You can right-click on the blank space)')}</span>}</th>)}{configurableProduct && <th scope="col">{t('operate')}</th>}</tr></thead>
       <tbody>{visible.length ? visible.map(result => <tr key={result.index}>
         {spec.columns.map(column => <td key={column} className={column === 'status' ? 'status' : undefined}
           onContextMenu={name === 'user list' && column === 'account' ? event => {
@@ -173,9 +232,14 @@ export function TablePage({ name, role, data, showDialog, mutate, open }: Props)
               <button className="btn small secondary" onClick={() => rowAction('lock', result)}>{t(result.record.status === 'locked' ? 'unlock' : 'lock')}</button>
             </> : (!!spec.editFields.length || name === 'send task') &&
               <button className="btn small blue" onClick={() => rowAction('delete', result)}>{t('delete')}</button>}
+            {role === 'admin' && name === 'channel list' &&
+              <button className="btn small secondary" onClick={() => rowAction('toggle-channel', result)}>
+                {t(['enable', 'enabled'].includes(String(result.record['enabled state'])) ? 'deactivate' : 'enable')}
+              </button>}
           </div> : <Cell name={name} column={column} record={result.record} />}
         </td>)}
-      </tr>) : <tr><td className="empty" colSpan={spec.columns.length}>{t('no data')}</td></tr>}</tbody>
+        {configurableProduct && <td><button className="btn small" onClick={() => openAdminForm('product', result)}>{t('Editing')}</button></td>}
+      </tr>) : <tr><td className="empty" colSpan={spec.columns.length + Number(configurableProduct)}>{t('no data')}</td></tr>}</tbody>
     </table></div>
     {!!results.length && <form className="pager" onSubmit={event => {
       event.preventDefault();
@@ -195,6 +259,49 @@ export function TablePage({ name, role, data, showDialog, mutate, open }: Props)
       {t('Locked accounts cannot log in. Do not send SMS after a SPID or account is deactivated.')}<br />
       {t('Data is retained for the last two months.')}</div>}
   </div></Card>;
+}
+
+function PermissionTree({ value }: { value: string }) {
+  const { t } = useLocale();
+  const [checked, setChecked] = useState(() => new Set(value.split(',').filter(Boolean)));
+  function descendants(id: string): string[] {
+    return [id, ...permissions.filter(item => item.parent === id).flatMap(item => descendants(item.id))];
+  }
+  function change(id: string, selected: boolean) {
+    setChecked(previous => {
+      const next = new Set(previous);
+      for (const item of descendants(id)) {
+        if (selected) next.add(item);
+        else next.delete(item);
+      }
+      return next;
+    });
+  }
+  function nodes(parent: string) {
+    return <ul>{permissions.filter(item => item.parent === parent).map(item =>
+      <li key={item.id}>
+        <label><input type="checkbox" checked={checked.has(item.id)} onChange={event => change(item.id, event.target.checked)} /> {t(item.label)}</label>
+        {permissions.some(child => child.parent === item.id) && nodes(item.id)}
+      </li>,
+    )}</ul>;
+  }
+  return <fieldset className="tree">
+    <legend>{t('Permissions')}</legend>
+    <input type="hidden" name="Permissions" value={[...checked].join(',')} />
+    {nodes('')}
+  </fieldset>;
+}
+
+function sourceOptions(data: Data, source: AdminField['source']) {
+  if (!source) return undefined;
+  const fields = {
+    roles: ['role', 'Role name'], suppliers: ['channel provider', 'Supplier abbreviation'],
+    channelTypes: ['channel type', 'name'], pools: ['channel pool list', 'channel pool'],
+    channels: ['channel list', 'channel name/vendor'], customers: ['user list', 'account'],
+    products: ['product list', 'Product name'],
+  };
+  const [page, key] = fields[source];
+  return [...new Set(rowsFor(data, page).map(row => row[key]).filter(value => value !== undefined && value !== ''))];
 }
 
 const translatedColumns = new Set(['status', '状态', 'task status', 'audit status', 'enabled state', 'health state', 'role', 'role name', 'login user side']);

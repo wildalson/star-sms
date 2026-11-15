@@ -155,3 +155,9 @@ button:disabled{cursor:default;opacity:.65}
 @media(max-width:520px){.topbar .health{display:none}.righttop .profile-name{max-width:68px}.language-switch button{padding-inline:5px}}
 @media(max-width:440px){.topbar>.icon-btn:not(:first-child){display:none}}
 @media(max-width:380px){.righttop .profile-name{max-width:42px}}
+
+.radio-field{border:0;padding:0;margin:0 0 10px;display:flex;align-items:center;flex-wrap:wrap;gap:8px}
+.radio-field legend{float:left;width:110px;text-align:right;padding:8px 5px 8px 0;font-weight:600;color:#666}
+.radio-field>label{width:auto;text-align:left;font-weight:400;padding:0 6px 0 0}
+.radio-field input[type="radio"]{accent-color:var(--teal)}
+.field > input.form-toggle{width:18px;height:18px;margin:10px 0;padding:0;accent-color:var(--teal)}

@@ -19,7 +19,15 @@ export function Workspace({ role, data, refresh }: { role: Role; data: Data; ref
   const timer = useRef<number>(undefined);
   const scroll = useRef<HTMLDivElement>(null);
   const tab = useRef<HTMLDivElement>(null);
-  const groups = role === 'admin' ? adminGroups : clientGroups;
+  const customerRights = data.settings['customer rights'] ?? {};
+  const groups = role === 'admin' ? adminGroups : clientGroups.map(([label, glyph, children]) => {
+    const visible = children.filter(name => !(
+      (customerRights['Hide reports'] && name === 'user statis') ||
+      (customerRights['Hide your finances'] && name === 'recharge record') ||
+      (customerRights['Hide send details'] && ['send record', 'reply record'].includes(name))
+    ));
+    return [label, glyph, visible] as const;
+  }).filter(([label, , children]) => label === 'overview' || children.length);
   const queued = rowsFor(data, 'send task').filter(row => row['task status'] === 'queued (demo)').length;
   useEffect(() => { tab.current?.scrollIntoView({ block: 'nearest', inline: 'nearest' }); }, [active]);
   useEffect(() => () => window.clearTimeout(timer.current), []);
@@ -121,7 +129,7 @@ export function Workspace({ role, data, refresh }: { role: Role; data: Data; ref
           name === 'product tree' || name === 'channel type' ? <Tree name={name} data={data} /> :
           <TablePage name={name} role={role} data={data} showDialog={setDialog}
             mutate={async values => { await save('/rows/' + encodeURIComponent(name), 'POST', values); notify('Saved locally'); }}
-            open={open} />}
+            open={open} hideExports={role === 'client' && customerRights['Hide exports'] === 'yes'} />}
       </div>)}
     </main>
     {dialog && <Dialog spec={dialog} close={() => setDialog(undefined)} />}
@@ -185,8 +193,9 @@ function SendSms({ data, send }: { data: Data; send: (values: ReturnType<typeof 
   const { t } = useLocale();
   return <Card title="Send SMS"><AsyncForm className="send-form" submit={send} label="Submit task">
     <p className="notice">{t('Local demo. Messages are queued without sending.')}</p>
-    <Field idPrefix="send" label="product type" hint="please select" options={rowsFor(data, 'product list').map(row => row['Product name'])} required />
+    <Field idPrefix="send" label="product type" hint="please select" options={rowsFor(data, 'product list').map(row => row['Product name'])} optionLabels={Object.fromEntries(rowsFor(data, 'product list').filter(row => row.SPID).map(row => [row['Product name'], row['Product name'] + ' (' + row.SPID + ')']))} required />
     <Field idPrefix="send" label="Sender" hint="senderID" />
+    <Field idPrefix="send" label="Scheduled send time (UTC+8)" inputType="datetime-local" />
     <Field idPrefix="send" label="mobile" hint="Enter one phone number per line" multiline required />
     <Field idPrefix="send" label="SMS content" hint="Enter message content" multiline required />
   </AsyncForm></Card>;
@@ -195,11 +204,23 @@ function SendSms({ data, send }: { data: Data; send: (values: ReturnType<typeof 
 function Settings({ name, data, save }: { name: string; data: Data; save: (values: ReturnType<typeof formValues>) => Promise<void> }) {
   const { t } = useLocale();
   const [title, label, fields] = configForms[name];
-  if (name === 'my password') return <Card title={title}><div className="config-form">{t('This local demo uses fixed demo credentials.')}</div></Card>;
+  if (name === 'my password') return <Card title={title}><div className="config-form">
+    <p className="notice">{t('This local demo uses fixed demo credentials.')}</p>
+    {fields.map(([field]) => <div key={field} className="field">
+      <label htmlFor={'locked-' + field}>{t(field)}</label>
+      <input id={'locked-' + field} type="password" disabled />
+    </div>)}
+  </div></Card>;
   return <Card title={title}><AsyncForm className="config-form" submit={save} label={label}>
     {fields.map(([field, hint, initial, upload, dimensions]) =>
       <Field key={field} idPrefix={name} label={field} hint={hint} value={data.settings[name]?.[field] ?? initial}
-        options={field === 'Encryption' ? ['TLS', 'SSL', 'None'] : field === 'SMTP Auth' ? ['Yes', 'No'] : []}
+        options={field === 'Encryption' ? ['None', 'SSL', 'TLS'] : field === 'Uses of SMS' ? [
+          'Front desk registration CAPTCHA', 'The receptionist forgot the password verification code',
+          'User balance alarm SMS', 'intelligent anti fraud alarm',
+        ] : undefined}
+        checkbox={field === 'SMTP Auth'} multiline={field === 'Domain names：'}
+        inputType={field === 'Port' ? 'number' : field === 'From email' ? 'email' : undefined}
+        range={field === 'Port' ? { min: 1, max: 65535 } : undefined}
         extra={upload && <><label className="btn upload-control">{t(upload)}<input type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/x-icon"
           onChange={event => {
             const file = event.currentTarget.files?.[0];

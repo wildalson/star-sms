@@ -24,6 +24,6 @@ export function initialState(): State {
   return { rows: structuredClone(initialData), settings: {}, lastTaskId: 0, lastRecordId: 0 };
 }
 
-export const dateTime = () => new Intl.DateTimeFormat('sv-SE', {
+export const dateTime = (date = new Date()) => new Intl.DateTimeFormat('sv-SE', {
   timeZone: 'Asia/Manila', dateStyle: 'short', timeStyle: 'medium',
-}).format(new Date());
+}).format(date);

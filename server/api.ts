@@ -4,7 +4,9 @@ import cookieParser from 'cookie-parser';
 import express, { Router, type Request, type Response } from 'express';
 import { rateLimit } from 'express-rate-limit';
 import { demoAccounts } from '../src/demo-accounts.ts';
+import { permissions } from '../src/permissions-tree.ts';
 import { configForms, pages } from '../src/pages.ts';
+import { adminFieldKey, adminForms, type AdminField, type AdminFormKey } from '../src/admin-forms.ts';
 import { dateTime, type Fields, type Role, type Row } from '../src/model.ts';
 import type { Store } from './store.ts';
 
@@ -124,34 +126,78 @@ function roleApi(role: Role, store: Store, hostedPassword?: string) {
     const state = await store.read();
     if (role === 'admin') return res.json(state);
     const rows = Object.fromEntries(Object.entries(state.rows).filter(([key]) => clientPages.has(key)));
+    rows['product list'] = (rows['product list'] ?? []).map(product => ({
+      'Product name': product['Product name'],
+      SPID: product.SPID ?? '',
+    }));
+    const customer = state.rows['user list']?.find(row => row.ID === 1);
+    const rights = Object.fromEntries(['Hide reports', 'Hide send details', 'Hide your finances',
+      'Hide exports', 'Hide cell phone number', 'Hidden state']
+      .filter(key => customer?.[key] === 'yes').map(key => [key, 'yes']));
+    if (rights['Hide reports']) delete rows['user statis'];
+    if (rights['Hide your finances']) delete rows['recharge record'];
+    if (rights['Hide send details']) {
+      delete rows['send record'];
+      delete rows['reply record'];
+    }
+    if (rights['Hide cell phone number'] || rights['Hidden state']) {
+      for (const page of ['send record', 'reply record']) {
+        if (!rows[page]) continue;
+        rows[page] = rows[page].map(row => {
+          const visible = { ...row };
+          if (rights['Hide cell phone number']) {
+            for (const key of ['mobile', 'mobile/extension', 'Whitelist mobile phone number']) {
+              if (visible[key]) visible[key] = String(visible[key]).replace(/\d(?=\d{4})/g, '*');
+            }
+          }
+          if (rights['Hidden state']) {
+            delete visible.status;
+            delete visible['task status'];
+          }
+          return visible;
+        });
+      }
+    }
     rows['user list'] = [{ account: 'Demo customer' }];
-    res.json({ rows, settings: { 'site config': { 'Site name': state.settings['site config']?.['Site name'] ?? '短信' } } });
+    res.json({ rows, settings: {
+      'site config': { 'Site name': state.settings['site config']?.['Site name'] ?? '短信' },
+      'customer rights': rights,
+    } });
   });
 
   router.post('/tasks', async (req, res) => {
     if (role !== 'client') throw new InputError('Open the customer portal to submit SMS tasks.', 403);
-    const fields = formFields(req.body, ['product type', 'Sender', 'mobile', 'SMS content'], 16_000);
+    const fields = formFields(req.body, ['product type', 'Sender', 'mobile', 'SMS content', 'Scheduled send time (UTC+8)'], 16_000);
     const recipients = [...new Set(fields.mobile.split(/[\s,;，]+/).filter(Boolean))];
     if (!recipients.length || recipients.length > 1000 || recipients.some(value => !/^\+?\d{7,16}$/.test(value))) {
       throw new InputError('Enter up to 1,000 valid phone numbers.');
     }
     if (!fields['SMS content']) throw new InputError('Enter message content.');
+    const scheduled = fields['Scheduled send time (UTC+8)'];
+    if (scheduled) {
+      const instant = new Date(scheduled + ':00+08:00');
+      if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(scheduled) ||
+        !Number.isFinite(instant.getTime()) || dateTime(instant).slice(0, 16).replace(' ', 'T') !== scheduled ||
+        instant.getTime() <= Date.now()) throw new InputError('Select a future send time.');
+    }
     await store.update(state => {
-      if (!(state.rows['product list'] ?? []).some(row => row['Product name'] === fields['product type'])) {
-        throw new InputError('Select a valid product.');
-      }
+      const product = state.rows['product list']?.find(row => row['Product name'] === fields['product type']);
+      if (!product) throw new InputError('Select a valid product.');
       const id = ++state.lastTaskId;
       const now = dateTime();
       const status = 'queued (demo)';
+      const spid = product.SPID ?? '';
       (state.rows['send task'] ??= []).push({
-        'task ID': id, 'user/company': 'Demo customer', 'create time/timed transmission time': now,
+        'task ID': id, 'user/company': 'Demo customer',
+        'create time/timed transmission time': scheduled ? now + ' / ' + scheduled.replace('T', ' ') + ':00' : now,
+        'task type': scheduled ? 'Scheduled' : 'Immediate', SPID: spid,
         'task status': status, 'product/code': fields['product type'], 'send content': fields['SMS content'],
         'Total number/Submission success/submission failure': recipients.length + '/0/0',
       });
       const records = state.rows['send record'] ??= [];
       for (const mobile of recipients) records.push({
         'S/N': ++state.lastRecordId, 'user/company': 'Demo customer', 'mobile/extension': mobile, date: now,
-        status, 'SMS content': fields['SMS content'], 'product/code': fields['product type'], 'task ID': id, senderID: fields.Sender,
+        status, 'SMS content': fields['SMS content'], 'product/code': fields['product type'], 'task ID': id, senderID: fields.Sender, SPID: spid,
       });
     });
     res.sendStatus(201);
@@ -174,8 +220,15 @@ function roleApi(role: Role, store: Store, hostedPassword?: string) {
       throw new InputError('This page is unavailable.', 403);
     }
     const { operation, expected } = req.body ?? {};
+    const formKey = req.body?.form;
     const index = req.body?.index;
     const spec = pages[name];
+    const form = typeof formKey === 'string' && Object.hasOwn(adminForms, formKey)
+      ? adminForms[formKey as AdminFormKey] : undefined;
+    if (formKey !== undefined && (!form || role !== 'admin' || form.page !== name ||
+      (operation !== 'create' && operation !== 'edit') || (formKey === 'customerAttributes' && operation !== 'edit'))) {
+      throw new InputError('Operation unavailable.', 403);
+    }
     await store.update(state => {
       const rows = state.rows[name] ??= [];
       if (operation === 'delete-many' && spec.editFields.length) {
@@ -193,14 +246,30 @@ function roleApi(role: Role, store: Store, hostedPassword?: string) {
         return;
       }
       if (operation === 'create') {
-        if (!spec.editFields.length) throw new InputError('This table does not allow new records.');
-        const values = editableValues(req.body?.values, spec.editFields);
+        if (!form && !spec.editFields.length) throw new InputError('This table does not allow new records.');
+        const values = form ? adminValues(req.body?.values, form.fields) : editableValues(req.body?.values, spec.editFields);
         const next: Row = { ...values, 'create time': dateTime() };
         for (const key of ['ID', 'UID', 'S/N', 'channel id'].filter(key => spec.columns.includes(key))) {
           next[key] = rows.reduce((max, row) => Math.max(max, Number(row[key]) || 0), 0) + 1;
         }
         if (name === 'user list') next.status = 'normal';
         if (name === 'account') setAccountLabel(next);
+        if (form && 'subtype' in form) {
+          next['Protocol'] = form.subtype;
+          next['enabled state'] = 'disabled';
+          next['Health state'] = 'offline';
+        }
+        if (formKey === 'blacklist' || formKey === 'whitelist') {
+          const key = formKey === 'blacklist' ? 'mobile' : 'Whitelist mobile phone number';
+          const numbers = [...new Set(String(next[key]).split(/\s+/).filter(Boolean))];
+          if (!numbers.length || numbers.length > 20_000 || numbers.some(number => !/^\+?\d{7,16}$/.test(number))) {
+            throw new InputError('Enter up to 20,000 valid phone numbers, one per line.');
+          }
+          for (const number of numbers) rows.push({ ...next, [key]: number });
+          return;
+        }
+        if (formKey === 'userTemplate') next['Audit status'] = 'Pending review';
+        if (formKey === 'announcement') next.date = next['create time'];
         rows.push(next);
         return;
       }
@@ -212,16 +281,24 @@ function roleApi(role: Role, store: Store, hostedPassword?: string) {
         if (name === 'send task') {
           state.rows['send record'] = (state.rows['send record'] ?? []).filter(row => row['task ID'] !== record['task ID']);
         }
-      } else if (operation === 'edit' && spec.editFields.length) {
-        Object.assign(record, editableValues(req.body?.values, spec.editFields));
+      } else if (operation === 'edit' && (form || spec.editFields.length)) {
+        Object.assign(record, form ? adminValues(req.body?.values, form.fields) : editableValues(req.body?.values, spec.editFields));
         if (name === 'account') setAccountLabel(record);
       } else if (operation === 'lock' && name === 'user list') {
         record.status = record.status === 'locked' ? 'normal' : 'locked';
+      } else if (operation === 'toggle-channel' && name === 'channel list' && role === 'admin') {
+        record['enabled state'] = ['enable', 'enabled'].includes(String(record['enabled state'])) ? 'disabled' : 'enabled';
       } else if (operation === 'product' && name === 'user list') {
-        const { product } = formFields(req.body?.values, ['product']);
+        const billingField = 'International product billing word count';
+        const values = formFields(req.body?.values, ['product', billingField]);
+        const { product } = values;
         if (!(state.rows['product list'] ?? []).some(row => row['Product name'] === product)) throw new InputError('Select a product.');
+        if (values[billingField] && !['160words/pieces', '140words/pieces', 'force 1 piece'].includes(values[billingField])) {
+          throw new InputError('Invalid ' + billingField);
+        }
         const products = String(record['launched product'] ?? '').split('|').filter(Boolean);
         record['launched product'] = [...new Set([...products, product])].join('|');
+        record[billingField + ' · ' + product] = values[billingField];
       } else {
         throw new InputError('Operation unavailable.');
       }
@@ -235,9 +312,32 @@ function roleApi(role: Role, store: Store, hostedPassword?: string) {
 function editableValues(input: unknown, labels: string[]) {
   const values = formFields(input, labels.filter(label => !/password/i.test(label)));
   if (!values[labels[0]]) throw new InputError(labels[0] + ' is required.');
+  if (values.Permissions) {
+    const known = new Set(permissions.map(permission => permission.id));
+    const selected = values.Permissions.split(',');
+    if (selected.some(id => !known.has(id))) throw new InputError('Invalid permissions.');
+    values.Permissions = [...new Set(selected)].join(',');
+  }
   return values;
 }
 
 function setAccountLabel(row: Row) {
   row['User name/name/mobile phone number'] = [row['User name'], row.name, row.mobile].filter(Boolean).join(' / ');
+}
+
+function adminValues(input: unknown, fields: AdminField[]) {
+  const persisted = fields.filter(field => !/password/i.test(field.label));
+  const values = formFields(input, persisted.map(adminFieldKey), 400_000);
+  for (const field of persisted) {
+    const value = values[adminFieldKey(field)];
+    if (field.checkbox && value && value !== 'yes') throw new InputError('Invalid ' + field.label);
+    if (!value) {
+      if (field.required) throw new InputError(field.label + ' is required.');
+      continue;
+    }
+    if (field.options && !field.options.includes(value)) throw new InputError('Invalid ' + field.label);
+    if (field.number && (!/^\d+$/.test(value) || Number(value) < field.number.min ||
+      Number(value) > field.number.max)) throw new InputError('Invalid ' + field.label);
+  }
+  return values;
 }

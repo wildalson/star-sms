@@ -70,4 +70,43 @@ test('separate portal sessions and a shared, persistent demo queue', async t => 
   assert.equal(customerState.rows.account, undefined);
   assert.equal(customerState.rows['channel list'], undefined);
   assert.equal((await createStore(undefined, file).read()).lastTaskId, 2);
+
+  const mutate = (page: string, values: unknown) =>
+    call('admin', '/rows/' + encodeURIComponent(page), adminCookie, values);
+  const channel = {
+    operation: 'create', form: 'smpp', values: {
+      'channel name/vendor': 'Local test channel', 'Access protocol': 'SMPP', 'Extension length': '20',
+      'Total delivery speed': '100', 'Number of channel connections': '1', 'Billing mode': 'Submission billing',
+      password: 'discard-this-test-value',
+    },
+  };
+  assert.equal((await mutate('channel list', { ...channel, values: { ...channel.values, 'Total delivery speed': '9' } })).status, 400);
+  assert.equal((await mutate('channel list', channel)).status, 204);
+  const saved = await (await call('admin', '/state', adminCookie)).json() as State;
+  const savedChannel = saved.rows['channel list'].find(row => row['channel name/vendor'] === 'Local test channel');
+  assert.equal(savedChannel?.['Access protocol'], 'SMPP');
+  assert.equal(savedChannel?.password, undefined);
+  assert.equal(savedChannel?.['enabled state'], 'disabled');
+  assert.equal((await mutate('user whitelist', { operation: 'create', form: 'whitelist', values: {
+    account: 'Demo customer', 'Whitelist mobile phone number': '+630000000000\n+630000000001\n+630000000000',
+  } })).status, 204);
+
+  const future = '2099-01-02T12:34';
+  assert.equal((await call('client', '/tasks', clientCookie, { ...task, 'Scheduled send time (UTC+8)': '2099-02-30T12:34' })).status, 400);
+  assert.equal((await call('client', '/tasks', clientCookie, { ...task, 'Scheduled send time (UTC+8)': future })).status, 201);
+  const afterScheduling = await (await call('admin', '/state', adminCookie)).json() as State;
+  assert.equal(afterScheduling.rows['user whitelist'].length, 2);
+  assert.equal(afterScheduling.rows['send task'].at(-1)?.['task type'], 'Scheduled');
+  assert.match(String(afterScheduling.rows['send task'].at(-1)?.['create time/timed transmission time']), /2099-01-02 12:34:00/);
+
+  assert.equal((await mutate('role', { operation: 'create', values: { 'Role name': 'Test role', Permissions: '4,19' } })).status, 204);
+  assert.equal((await mutate('role', { operation: 'create', values: { 'Role name': 'Invalid role', Permissions: '999999' } })).status, 400);
+  assert.equal((await mutate('user list', {
+    operation: 'edit', form: 'customerAttributes', index: 0, expected: saved.rows['user list'][0],
+    values: { 'Hide reports': 'yes', 'Hide cell phone number': 'yes', 'Hidden state': 'yes' },
+  })).status, 204);
+  const restricted = await (await call('client', '/state', clientCookie)).json() as State;
+  assert.equal(restricted.settings['customer rights']['Hide reports'], 'yes');
+  assert.match(String(restricted.rows['send record'][0]['mobile/extension']), /\*+0000$/);
+  assert.equal(restricted.rows['send record'][0].status, undefined);
 });
